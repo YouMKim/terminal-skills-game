@@ -12,7 +12,9 @@ Everything runs in a **simulated terminal, vim, and tmux built from scratch in v
 
 ## Play
 
-ES modules need a web server (opening `index.html` directly won't work):
+**Hosted:** https://youmkim.github.io/terminal-skills-game/ (auto-deployed from `main` by GitHub Actions, tests must pass first).
+
+**Locally** — ES modules need a web server (opening `index.html` directly won't work):
 
 ```sh
 cd terminal-quest
