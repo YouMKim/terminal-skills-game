@@ -102,6 +102,29 @@ function ok(cond, label) {
 
   // xargs (log.txt gained a 5th line from the tail -f test above)
   eq(sh.execute('echo log.txt | xargs wc -l').out, ['5'], 'shell xargs');
+
+  // command substitution
+  eq(sh.execute('echo $(echo hi)').out, ['hi'], 'shell $() substitution');
+  eq(sh.execute('echo n=$(grep -c ERROR log.txt)').out, ['n=2'], 'shell $() inline');
+
+  // pgrep / pkill
+  k.spawn({ cmd: './imp-a.sh', name: 'imposter-a', bg: true, program: { name: 'imposter-a', cpu: 9, onTick() {} } });
+  k.spawn({ cmd: './imp-b.sh', name: 'imposter-b', bg: true, program: { name: 'imposter-b', cpu: 9, onTick() {} } });
+  eq(sh.execute('pgrep imposter').out.length, 2, 'shell pgrep finds both');
+  sh.execute('kill $(pgrep imposter)');
+  ok(k.procs.filter((p) => p.name.startsWith('imposter')).every((p) => p.status === 'killed'), 'shell kill $(pgrep)');
+
+  // cut / awk / sed
+  vfs.write('/home/dev/cols.log', 'agent-a 12ms ok\nagent-b 40ms retry\n');
+  eq(sh.execute("awk '{print $1}' cols.log").out, ['agent-a', 'agent-b'], 'shell awk $1');
+  eq(sh.execute("awk '{print $2, $3}' cols.log").out, ['12ms ok', '40ms retry'], 'shell awk $2,$3');
+  eq(sh.execute("cut -d' ' -f2 cols.log").out, ['12ms', '40ms'], 'shell cut -d -f');
+  eq(sh.execute("sed 's/agent-//' cols.log").out, ['a 12ms ok', 'b 40ms retry'], 'shell sed s///');
+  eq(sh.execute("awk '{print $1}' cols.log | sed 's/agent-//' | sort").out, ['a', 'b'], 'shell awk|sed|sort chain');
+
+  // !$ — last argument of the previous command
+  sh.execute('ls cols.log');
+  eq(sh.execute('wc -l !$').out.pop(), '2', 'shell !$ expansion');
 }
 
 // --- Vim: motions -------------------------------------------------------------
@@ -308,6 +331,82 @@ function seq(str) {
   const vm = new Vim({ lines: lvl.lines, cursor: [0, 0], undoHistory: lvl.history });
   press(vm, seq('uuuu'));
   eq(vm.lines, lvl.target, 'vim time-lord undo chain');
+}
+
+{
+  // dot repeat: A;<esc> then j. j.
+  const vm = vimWith(['a', 'b', 'c'], [0, 0]);
+  press(vm, ['A', ';', '<esc>', 'j', '.', 'j', '.']);
+  eq(vm.lines, ['a;', 'b;', 'c;'], 'vim dot repeats A;<esc>');
+  press(vm, seq('gg'));
+  press(vm, ['>', '>', 'j', '.']);
+  eq(vm.lines, ['  a;', '  b;', 'c;'], 'vim >> then dot');
+  press(vm, ['<', '<', 'k', '.']);
+  eq(vm.lines, ['a;', 'b;', 'c;'], 'vim << unindents');
+}
+
+{
+  // dot repeats a dw
+  const vm = vimWith(['del keep', 'del stay'], [0, 0]);
+  press(vm, ['d', 'w', 'j', '0', '.']);
+  eq(vm.lines, ['keep', 'stay'], 'vim dot repeats dw');
+}
+
+{
+  // % bracket matching
+  const vm = vimWith(['call(alpha, [x, y])'], [0, 0]);
+  press(vm, ['%']);
+  eq(vm.c, 18, 'vim % to closing paren');
+  press(vm, ['%']);
+  eq(vm.c, 4, 'vim % back to opening');
+  const vm2 = vimWith(['if (a) {', '  b()', '}'], [0, 7]);
+  press(vm2, ['%']);
+  eq([vm2.r, vm2.c], [2, 0], 'vim % across lines');
+}
+
+{
+  // * and # word search
+  const vm = vimWith(['core x', 'y core z', 'core'], [0, 0]);
+  press(vm, ['*']);
+  eq([vm.r, vm.c], [1, 2], 'vim * next occurrence');
+  press(vm, ['*']);
+  eq([vm.r, vm.c], [2, 0], 'vim * again');
+  press(vm, ['#']);
+  eq([vm.r, vm.c], [1, 2], 'vim # backward');
+}
+
+{
+  // marks
+  const vm = vimWith(['one', 'two', 'three'], [0, 1]);
+  press(vm, ['m', 'a', 'G']);
+  eq(vm.r, 2, 'vim G before mark jump');
+  press(vm, ['`', 'a']);
+  eq([vm.r, vm.c], [0, 1], 'vim `a exact mark jump');
+}
+
+{
+  // macros
+  const vm = vimWith(['item a', 'item b', 'item c'], [0, 0]);
+  press(vm, ['q', 'a', '0', 'd', 'w', 'i', '-', ' ', '<esc>', 'j', 'q']);
+  eq(vm.lines[0], '- a', 'vim macro recording applies');
+  press(vm, ['2', '@', 'a']);
+  eq(vm.lines, ['- a', '- b', '- c'], 'vim 2@a replays macro');
+}
+
+{
+  // ci' single-quote text object
+  const vm = vimWith(["mode = 'slow';"], [0, 9]);
+  press(vm, ['c', 'i', "'"]);
+  press(vm, seq('turbo'));
+  press(vm, ['<esc>']);
+  eq(vm.lines[0], "mode = 'turbo';", "vim ci' text object");
+}
+
+{
+  // di( empties parens
+  const vm = vimWith(['cleanup(old_tmp_files);'], [0, 12]);
+  press(vm, ['d', 'i', '(']);
+  eq(vm.lines[0], 'cleanup();', 'vim di( text object');
 }
 
 // --- Level definitions sanity ----------------------------------------------------

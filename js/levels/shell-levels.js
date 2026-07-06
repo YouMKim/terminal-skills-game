@@ -199,6 +199,71 @@ export const SHELL_LEVELS = [
     ],
   },
   {
+    id: 'shell/11',
+    title: 'Chain Reaction',
+    teach: ['xargs', 'chmod +x'],
+    brief:
+      'A crashed agent littered the workspace with .tmp files, and the cleanup script arrived without its execute bit. ' +
+      'xargs turns a stream of names into arguments: find … | xargs rm deletes everything find found, in one line. ' +
+      'And a script you can’t run yet just needs chmod +x.',
+    hints: [
+      'Scout first: find . -name "*.tmp" | wc -l — know your enemy.',
+      'find . -name "*.tmp" | xargs rm — find feeds the names, xargs hands them to rm.',
+      './agents/cleanup.sh says "permission denied"? chmod +x agents/cleanup.sh, then run it.',
+    ],
+    setup(k) {
+      k.vfs.root = baseTree({
+        agents: dir({ 'cleanup.sh': file('#!/bin/sh\n# certifies a clean workspace\n') }), // note: not executable yet
+        work: dir({
+          'cache-01.tmp': file('junk\n'),
+          'cache-02.tmp': file('junk\n'),
+          'report.md': file('keep me\n'),
+          batch: dir({ 'a.tmp': file('junk\n'), 'b.tmp': file('junk\n'), 'results.json': file('{"keep": true}\n') }),
+          deep: dir({ nest: dir({ 'zz.tmp': file('junk\n') }) }),
+        }),
+      });
+      k.registerProgram('/home/dev/agents/cleanup.sh', (argv, kernel) => {
+        let tmps = 0;
+        kernel.vfs.walk('/home/dev', (p, node) => { if (node.type === 'file' && p.endsWith('.tmp')) tmps++; });
+        if (tmps > 0) {
+          return { name: 'cleanup', immediateError: `cleanup: refusing to certify — ${tmps} .tmp file(s) still present. Hunt them down first.` };
+        }
+        let t = 0;
+        return {
+          name: 'cleanup',
+          cpu: 0.5,
+          onTick(proc, k2) {
+            if (++t === 2) {
+              k2.vfs.write('/home/dev/work/cleaned.ok', 'workspace certified clean\n');
+              proc.fgLines.push('cleanup: ✔ workspace certified clean');
+              proc.status = 'done';
+            }
+          },
+        };
+      });
+    },
+    objectives: [
+      { text: 'Scout the junk: find . -name "*.tmp" | wc -l', check: (ctx) => ctx.has('pipeline', (e) => e.cmds.includes('find') && e.cmds.includes('wc')) },
+      {
+        text: 'Wipe them in ONE line: find . -name "*.tmp" | xargs rm',
+        check(ctx) {
+          if (!ctx.has('xargs', (e) => e.cmd === 'rm')) return false;
+          let tmps = 0;
+          ctx.vfs.walk('/home/dev', (p, node) => { if (node.type === 'file' && p.endsWith('.tmp')) tmps++; });
+          return tmps === 0;
+        },
+      },
+      {
+        text: 'Grant the execute bit: chmod +x agents/cleanup.sh',
+        check(ctx) {
+          const node = ctx.vfs.get('/home/dev/agents/cleanup.sh');
+          return !!node && node.exec;
+        },
+      },
+      { text: 'Run ./agents/cleanup.sh to certify the workspace', check: (ctx) => ctx.vfs.read('/home/dev/work/cleaned.ok') !== null },
+    ],
+  },
+  {
     id: 'shell/5',
     title: 'Runaway',
     teach: ['ps', 'kill'],
@@ -232,6 +297,52 @@ export const SHELL_LEVELS = [
           return alive.length === 2;
         },
         canFail: true,
+      },
+    ],
+  },
+  {
+    id: 'shell/12',
+    title: 'Substitution Cipher',
+    teach: ['$(...)', 'pgrep', 'pkill'],
+    brief:
+      'Three imposter processes snuck into the fleet. Command substitution — $(...) — runs a command and pastes ' +
+      'its output into your line, so kill $(pgrep imposter) finds AND executes in one stroke. This composition is ' +
+      'the single most useful trick for wrangling many agents at once.',
+    hints: [
+      'Warm up: echo "operator: $(whoami)" — see how $() melts into the line.',
+      'pgrep imposter prints the PIDs. That output can BE the arguments to kill.',
+      'kill $(pgrep imposter) — then ps to confirm only the real agents remain.',
+    ],
+    setup(k) {
+      k.vfs.root = baseTree({});
+      const mk = (name, cpu) =>
+        k.spawn({ cmd: `./agents/${name}.sh`, name, bg: true, program: { name, cpu, onTick() {} } });
+      mk('agent-alpha', 1.1);
+      mk('agent-gamma', 0.9);
+      mk('imposter-x91', 22.4);
+      mk('imposter-k07', 19.8);
+      mk('imposter-qq3', 24.1);
+    },
+    objectives: [
+      { text: 'Try substitution: echo "operator: $(whoami)"', check: (ctx) => ctx.has('subst') },
+      { text: 'List the imposter PIDs: pgrep imposter', check: (ctx) => ctx.has('pgrep', (e) => 'imposter'.includes(e.pattern) || e.pattern.includes('imposter')) },
+      {
+        text: 'One stroke: kill $(pgrep imposter)',
+        check(ctx) {
+          if (!ctx.has('cmd', (e) => /kill\s+\$\(\s*pgrep/.test(e.line))) return false;
+          return ctx.k.procs.filter((p) => p.name.startsWith('imposter')).every((p) => p.status === 'killed');
+        },
+      },
+      {
+        text: 'Verify with ps: only the real agents remain',
+        check(ctx) {
+          const evs = ctx.events;
+          let lastKill = -1;
+          evs.forEach((e, i) => { if (e.type === 'kill' && e.name.startsWith('imposter')) lastKill = i; });
+          if (lastKill === -1) return false;
+          const allDead = ctx.k.procs.filter((p) => p.name.startsWith('imposter')).every((p) => p.status === 'killed');
+          return allDead && evs.some((e, i) => e.type === 'ps' && i > lastKill);
+        },
       },
     ],
   },
@@ -398,6 +509,48 @@ export const SHELL_LEVELS = [
       { text: 'Jump to line end with Ctrl-E', check: (ctx) => ctx.has('ctrl', (e) => e.key === 'e') },
       { text: 'Wipe a line with Ctrl-U (or Ctrl-K)', check: (ctx) => ctx.has('ctrl', (e) => e.key === 'u' || e.key === 'k') },
       { text: 'Ship the fixed deploy (--env prod)', check: (ctx) => ctx.vfs.read('/home/dev/deployed.ok') !== null },
+    ],
+  },
+  {
+    id: 'shell/13',
+    title: 'Field Surgeon',
+    teach: ['awk', 'cut', 'sed'],
+    brief:
+      'The access log is a table pretending to be text: "agent-name latency task status" per line. awk \'{print $1}\' ' +
+      'slices out a whitespace column, cut -d" " -f2 does it by delimiter, sed \'s/old/new/\' rewrites on the way past. ' +
+      'Chain them with sort | uniq -c to find which agent is spamming the API — then file your verdict.',
+    hints: [
+      "awk '{print $1}' logs/access.log — just the agent column.",
+      "awk '{print $1}' logs/access.log | sort | uniq -c | sort -rn — counted, ranked.",
+      "sed 's/agent-//' strips the prefix. Verdict: echo <name> > offender.txt (bare name, no prefix).",
+    ],
+    setup(k) {
+      const lines = [];
+      const seq = ['beta', 'alpha', 'beta', 'gamma', 'beta', 'alpha', 'beta'];
+      const statuses = ['ok', 'ok', 'ok', 'retry'];
+      for (let i = 0; i < 28; i++) {
+        const name = seq[i % seq.length];
+        lines.push(`agent-${name} ${80 + ((i * 37) % 400)}ms task-${100 + i} ${statuses[i % statuses.length]}`);
+      }
+      k.vfs.root = baseTree({
+        logs: dir({ 'access.log': file(lines.join('\n') + '\n') }),
+      });
+    },
+    objectives: [
+      { text: "Slice a column: awk '{print $1}' logs/access.log", check: (ctx) => ctx.has('awk') },
+      { text: 'Do it with cut too: cut -d" " -f2 logs/access.log', check: (ctx) => ctx.has('cut') },
+      {
+        text: 'Rank the chattiest agent: awk … | sort | uniq -c | sort -rn',
+        check: (ctx) => ctx.has('pipeline', (e) => (e.cmds.includes('awk') || e.cmds.includes('cut')) && e.cmds.includes('uniq')),
+      },
+      { text: "Strip prefixes in the stream: … | sed 's/agent-//'", check: (ctx) => ctx.has('sed', (e) => e.expr.includes('agent-')) },
+      {
+        text: 'File the verdict: echo <name> > offender.txt',
+        check(ctx) {
+          const c = ctx.vfs.read('/home/dev/offender.txt');
+          return c !== null && c.trim().replace(/^agent-/, '') === 'beta';
+        },
+      },
     ],
   },
   {

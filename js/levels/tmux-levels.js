@@ -170,6 +170,39 @@ export const TMUX_LEVELS = [
     ],
   },
   {
+    id: 'tmux/9',
+    title: 'Time Scroller',
+    teach: ['C-b [', 'scrollback'],
+    brief:
+      'Output scrolled past and took a secret with it. C-b [ enters copy mode — the pane freezes and you can ' +
+      'scroll back through history with ↑/↓/PgUp (g jumps to the very top, q quits). Print the boot log, let the ' +
+      'access code fly off screen, then scroll back up to recover it.',
+    hints: [
+      'Inside tmux: cat /var/log/boot.log — the code is near the TOP of the output.',
+      'C-b [ then PgUp/↑ (or g for the top). Read the ACCESS CODE line. q to exit copy mode.',
+      'Report it: echo <CODE> > code.txt',
+    ],
+    setup(k) {
+      const lines = ['boot: fleet kernel 5.1', 'boot: mounting /var/log', 'ACCESS CODE: ORION-9', 'boot: code issued, continuing'];
+      for (let i = 0; i < 140; i++) lines.push(`init: module-${String(i).padStart(3, '0')} loaded ok`);
+      lines.push('boot: complete');
+      k.vfs.root = baseTree({});
+      k.vfs.write('/var/log/boot.log', lines.join('\n') + '\n');
+    },
+    objectives: [
+      { text: 'Inside tmux, print it all: cat /var/log/boot.log', check: (ctx) => ctx.has('read', (e) => e.path.endsWith('boot.log')) && ctx.has('tmux-new-session') },
+      { text: 'Enter copy mode: C-b [', check: (ctx) => ctx.has('tmux-copy-enter') },
+      { text: 'Scroll back through history (↑ / PgUp / g)', check: (ctx) => ctx.has('tmux-copy-scroll') },
+      {
+        text: 'Recover the code: echo <CODE> > code.txt',
+        check(ctx) {
+          const c = ctx.vfs.read('/home/dev/code.txt');
+          return c !== null && c.trim() === 'ORION-9';
+        },
+      },
+    ],
+  },
+  {
     id: 'tmux/5',
     title: 'Window Shopping',
     teach: ['C-b c', 'C-b n/p', 'C-b 0-9', 'C-b ,'],
@@ -269,6 +302,59 @@ export const TMUX_LEVELS = [
       { text: 'Create session "monitor": tmux new -s monitor', check: (ctx) => ctx.has('tmux-new-session', (e) => e.name === 'monitor') },
       { text: 'Survey with tmux ls (while detached)', check: (ctx) => ctx.has('tmux-ls') && ctx.tmux && ctx.tmux.sessions.length >= 2 },
       { text: 'Board by name: tmux attach -t agents', check: (ctx) => ctx.has('cmd', (e) => /tmux\s+attach\s+-t\s+agents/.test(e.line)) },
+    ],
+  },
+  {
+    id: 'tmux/10',
+    title: 'The Command Line Within',
+    teach: ['C-b :', 'resize-pane', 'split-window'],
+    brief:
+      'Every tmux keybinding is sugar for a command. C-b : opens the command prompt, where the real API lives: ' +
+      'split-window -h, rename-window ops, resize-pane -L 10, kill-pane… If you know the prompt, you never need to ' +
+      'memorize a binding again — and you can script all of it later from your shell.',
+    hints: [
+      'C-b : then type split-window -h and Enter. Same as C-b %, but spelled out.',
+      'C-b : rename-window ops — no more anonymous "zsh" windows.',
+      'C-b : resize-pane -L 10 pulls the divider left. -R/-U/-D work too.',
+    ],
+    setup(k) {
+      k.vfs.root = baseTree({});
+    },
+    objectives: [
+      { text: 'Open the prompt (C-b :) and run any command', check: (ctx) => ctx.has('tmux-cmd') },
+      { text: 'Split via the prompt: :split-window -h', check: (ctx) => ctx.has('tmux-cmd', (e) => e.cmd === 'split-window') },
+      { text: 'Rename the window: :rename-window ops', check: (ctx) => ctx.tmux && ctx.tmux.attached && ctx.tmux.attached.windows.some((w) => w.name === 'ops') },
+      { text: 'Move a divider: :resize-pane -L 10', check: (ctx) => ctx.has('tmux-resize') },
+    ],
+  },
+  {
+    id: 'tmux/11',
+    title: 'Hive Mind',
+    teach: ['synchronize-panes'],
+    brief:
+      'The multi-agent party trick: setw synchronize-panes on makes every keystroke land in EVERY pane of the ' +
+      'window at once. Three panes, three agents, one command typed once. Operators use this to update, restart or ' +
+      'interrogate a whole fleet simultaneously. Just remember to turn it off before you type anything embarrassing.',
+    hints: [
+      'Build 3 panes first (C-b % and C-b ").',
+      'C-b : setw synchronize-panes on — note the SYNC badge in the status bar.',
+      'Type echo sync-check and watch it hit all three panes. Then :setw synchronize-panes off.',
+    ],
+    setup(k) {
+      k.vfs.root = baseTree({});
+    },
+    objectives: [
+      { text: 'Build at least 3 panes', check: (ctx) => ctx.tmux && ctx.tmux.win() && ctx.tmux.panes().length >= 3 },
+      { text: 'Engage: C-b : setw synchronize-panes on', check: (ctx) => ctx.has('tmux-sync', (e) => e.on) },
+      {
+        text: 'Run `echo sync-check` once — it lands everywhere',
+        check(ctx) {
+          if (!ctx.tmux || !ctx.tmux.win()) return false;
+          const panes = ctx.tmux.panes();
+          return panes.length >= 3 && panes.every((p) => p.shell.history.some((h) => h.includes('echo sync-check')));
+        },
+      },
+      { text: 'Disengage: :setw synchronize-panes off', check: (ctx) => ctx.has('tmux-sync', (e) => !e.on) },
     ],
   },
   {

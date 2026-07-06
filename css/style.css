@@ -363,6 +363,13 @@ a { color: var(--blue); }
   font-weight: 700;
 }
 
+.tmux-msg {
+  background: #04140a;
+  color: var(--amber);
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
 .tmux-overlay {
   position: absolute;
   inset: 0;

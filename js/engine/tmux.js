@@ -127,7 +127,7 @@ export class Tmux {
         if (node.pane === active) {
           const fresh = this.makePane(active.shell.cwd);
           win.activePane = fresh;
-          return { type: 'split', dir, a: { type: 'leaf', pane: active }, b: { type: 'leaf', pane: fresh } };
+          return { type: 'split', dir, ratio: 0.5, a: { type: 'leaf', pane: active }, b: { type: 'leaf', pane: fresh } };
         }
         return node;
       }
@@ -212,6 +212,82 @@ export class Tmux {
     this.k.emit({ type: 'tmux-new-window', count: this.attached.windows.length });
   }
 
+  // Resize the active pane by adjusting the nearest ancestor split on that axis.
+  resizeActive(dir, n = 5) {
+    const win = this.win();
+    if (!win) return;
+    const axis = dir === 'L' || dir === 'R' ? 'h' : 'v';
+    const active = win.activePane;
+    let target = null; // deepest ancestor split matching the axis
+    let side = null;
+    const walk = (node) => {
+      if (node.type === 'leaf') return node.pane === active;
+      if (walk(node.a)) {
+        if (node.dir === axis) { target = node; side = 'a'; }
+        return true;
+      }
+      if (walk(node.b)) {
+        if (node.dir === axis) { target = node; side = 'b'; }
+        return true;
+      }
+      return false;
+    };
+    walk(win.root);
+    if (!target) { this.cmdMsg = 'no pane to resize on that axis'; return; }
+    const grow = dir === 'R' || dir === 'D' ? (side === 'a' ? 1 : -1) : (side === 'a' ? -1 : 1);
+    target.ratio = Math.min(0.85, Math.max(0.15, (target.ratio ?? 0.5) + grow * 0.02 * n));
+    this.k.emit({ type: 'tmux-resize', dir, ratio: target.ratio });
+  }
+
+  // The tmux command prompt (C-b :).
+  runPromptCommand(line) {
+    const argv = line.trim().split(/\s+/).filter(Boolean);
+    if (!argv.length) return;
+    const cmd = argv[0];
+    this.k.emit({ type: 'tmux-cmd', cmd, line: line.trim() });
+    const win = this.win();
+    switch (cmd) {
+      case 'rename-window':
+        if (argv[1]) { win.name = argv[1]; this.k.emit({ type: 'tmux-rename', name: argv[1] }); }
+        return;
+      case 'split-window':
+        this.splitActive(argv.includes('-h') ? 'h' : 'v');
+        return;
+      case 'resize-pane': {
+        const flag = argv.find((a) => /^-[LRUD]$/.test(a));
+        if (!flag) { this.cmdMsg = 'resize-pane needs -L/-R/-U/-D'; return; }
+        const n = parseInt(argv.find((a) => /^\d+$/.test(a)) ?? '5', 10);
+        this.resizeActive(flag[1], n);
+        return;
+      }
+      case 'kill-pane': this.killActive(); return;
+      case 'new-window': this.newWindow(); return;
+      case 'select-window': {
+        const i = argv.indexOf('-t');
+        const idx = parseInt(argv[i + 1], 10);
+        if (!Number.isNaN(idx) && idx < this.attached.windows.length) {
+          this.attached.activeWin = idx;
+          this.k.emit({ type: 'tmux-select-window', idx });
+        }
+        return;
+      }
+      case 'setw': case 'set-window-option': case 'set': {
+        if (argv.includes('synchronize-panes')) {
+          const on = argv.includes('on') || (!argv.includes('off') && !win.sync);
+          win.sync = on;
+          this.k.emit({ type: 'tmux-sync', on });
+          this.cmdMsg = `synchronize-panes ${on ? 'on' : 'off'}`;
+        } else {
+          this.cmdMsg = `only synchronize-panes is supported here`;
+        }
+        return;
+      }
+      case 'detach': this.detach(); return;
+      default:
+        this.cmdMsg = `unknown command: ${cmd}`;
+    }
+  }
+
   // --- key handling -----------------------------------------------------------
 
   key(e) {
@@ -222,10 +298,12 @@ export class Tmux {
 
     if (this.copyPane) {
       const el = this.copyPane.term.el;
-      if (k === 'ArrowUp') { el.scrollTop -= 22; return true; }
-      if (k === 'ArrowDown') { el.scrollTop += 22; return true; }
-      if (k === 'PageUp') { el.scrollTop -= el.clientHeight; return true; }
-      if (k === 'PageDown') { el.scrollTop += el.clientHeight; return true; }
+      if (k === 'ArrowUp') { el.scrollTop -= 22; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
+      if (k === 'ArrowDown') { el.scrollTop += 22; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
+      if (k === 'PageUp') { el.scrollTop -= el.clientHeight; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
+      if (k === 'PageDown') { el.scrollTop += el.clientHeight; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
+      if (k === 'g') { el.scrollTop = 0; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
+      if (k === 'G') { el.scrollTop = el.scrollHeight; this.k.emit({ type: 'tmux-copy-scroll' }); return true; }
       if (k === 'q' || k === 'Escape' || k === 'Enter') {
         this.copyPane.term.copyMode = false;
         this.copyPane = null;
@@ -241,8 +319,16 @@ export class Tmux {
         this.k.emit({ type: 'tmux-prefix' });
         return true;
       }
-      // pass to the active pane's terminal
+      // synchronize-panes: broadcast to every pane in the window
       const win = this.win();
+      if (win && win.sync) {
+        let any = false;
+        for (const pane of this.panes(win)) {
+          if (pane.term && pane.term.key(e)) any = true;
+        }
+        return any;
+      }
+      // pass to the active pane's terminal
       if (win && win.activePane.term) return win.activePane.term.key(e);
       return false;
     }
@@ -278,6 +364,9 @@ export class Tmux {
         this.k.emit({ type: 'tmux-select-window', idx: this.attached.activeWin });
         return true;
       case 'd': this.detach(); return true;
+      case ':':
+        this.overlay = { kind: 'cmd', buf: '' };
+        return true;
       case ',':
         this.overlay = { kind: 'rename', buf: win.name };
         return true;
@@ -308,6 +397,15 @@ export class Tmux {
   overlayKey(e) {
     const k = e.key;
     const ov = this.overlay;
+    if (ov.kind === 'cmd') {
+      if (k === 'Enter') {
+        this.overlay = null;
+        this.runPromptCommand(ov.buf);
+      } else if (k === 'Escape') this.overlay = null;
+      else if (k === 'Backspace') ov.buf = ov.buf.slice(0, -1);
+      else if (k.length === 1 && !e.ctrlKey && !e.metaKey) ov.buf += k;
+      return true;
+    }
     if (ov.kind === 'rename') {
       if (k === 'Enter') {
         this.win().name = ov.buf || 'zsh';
@@ -370,13 +468,17 @@ export class Tmux {
           badge.textContent = '[COPY]';
           wrap.appendChild(badge);
         }
-        return;
+        return wrap;
       }
       const split = document.createElement('div');
       split.className = 'tmux-split ' + (node.dir === 'h' ? 'horiz' : 'vert');
       container.appendChild(split);
-      renderNode(node.a, split);
-      renderNode(node.b, split);
+      const ratio = node.ratio ?? 0.5;
+      const aEl = renderNode(node.a, split);
+      const bEl = renderNode(node.b, split);
+      aEl.style.flex = `${ratio} 1 0%`;
+      bEl.style.flex = `${1 - ratio} 1 0%`;
+      return split;
     };
 
     if (win.zoomed) {
@@ -395,9 +497,12 @@ export class Tmux {
         return `<span class="${cls}">${i}:${esc(w.name)}${mark}${w.zoomed && i === this.attached.activeWin ? 'Z' : ''}</span>`;
       })
       .join(' ');
+    const syncBadge = win.sync ? '<span class="tmux-prefix-ind">SYNC</span> ' : '';
+    const msg = this.cmdMsg ? `<span class="tmux-msg">${esc(this.cmdMsg)}</span> ` : '';
+    this.cmdMsg = null;
     bar.innerHTML =
       `<span class="tmux-sess">[${esc(this.attached.name)}]</span> ${winTabs}` +
-      `<span class="tmux-right">${this.prefix ? '<span class="tmux-prefix-ind">^B</span> ' : ''}"quest" ${new Date().toTimeString().slice(0, 5)}</span>`;
+      `<span class="tmux-right">${msg}${syncBadge}${this.prefix ? '<span class="tmux-prefix-ind">^B</span> ' : ''}"quest" ${new Date().toTimeString().slice(0, 5)}</span>`;
     el.appendChild(bar);
 
     // overlays
@@ -406,13 +511,15 @@ export class Tmux {
       ov.className = 'tmux-overlay';
       if (this.overlay.kind === 'rename') {
         ov.innerHTML = `<div class="tmux-overlay-box">(rename-window) ${esc(this.overlay.buf)}<span class="tcursor">&nbsp;</span></div>`;
+      } else if (this.overlay.kind === 'cmd') {
+        ov.innerHTML = `<div class="tmux-overlay-box">:${esc(this.overlay.buf)}<span class="tcursor">&nbsp;</span></div>`;
       } else if (this.overlay.kind === 'winlist') {
         const rows = this.attached.windows
           .map((w, i) => `<div class="${i === this.overlay.idx ? 'sel' : ''}">(${i}) ${esc(w.name)} — ${this.panes(w).length} panes</div>`)
           .join('');
         ov.innerHTML = `<div class="tmux-overlay-box"><div class="tdim">choose window (↑/↓, Enter):</div>${rows}</div>`;
       } else if (this.overlay.kind === 'help') {
-        ov.innerHTML = `<div class="tmux-overlay-box">C-b %  split left/right<br>C-b "  split top/bottom<br>C-b ←→↑↓/o  move between panes<br>C-b z  zoom · C-b x  kill pane<br>C-b c/n/p/0-9  windows · C-b ,  rename<br>C-b d  detach · C-b [  scroll<br><br><span class="tdim">press any key to close</span></div>`;
+        ov.innerHTML = `<div class="tmux-overlay-box">C-b %  split left/right<br>C-b "  split top/bottom<br>C-b ←→↑↓/o  move between panes<br>C-b z  zoom · C-b x  kill pane<br>C-b c/n/p/0-9  windows · C-b ,  rename<br>C-b d  detach · C-b [  scroll (q quits)<br>C-b :  command prompt (rename-window,<br>&nbsp;&nbsp;split-window, resize-pane -LRUD,<br>&nbsp;&nbsp;setw synchronize-panes on/off)<br><br><span class="tdim">press any key to close</span></div>`;
       }
       el.appendChild(ov);
     }

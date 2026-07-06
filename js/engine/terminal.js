@@ -240,7 +240,7 @@ export class TermUI {
     const isFirstWord = head.trimStart() === partial;
     let candidates = [];
     if (isFirstWord && !partial.includes('/')) {
-      const cmds = ['ls', 'cd', 'cat', 'grep', 'find', 'tail', 'head', 'echo', 'ps', 'kill', 'jobs', 'fg', 'bg', 'wc', 'sort', 'uniq', 'mkdir', 'touch', 'rm', 'mv', 'cp', 'tree', 'history', 'export', 'env', 'clear', 'tmux', 'man', 'help', 'which', 'chmod', 'xargs', 'pwd'];
+      const cmds = ['ls', 'cd', 'cat', 'grep', 'find', 'tail', 'head', 'echo', 'ps', 'kill', 'pgrep', 'pkill', 'jobs', 'fg', 'bg', 'wc', 'sort', 'uniq', 'cut', 'awk', 'sed', 'mkdir', 'touch', 'rm', 'mv', 'cp', 'tree', 'history', 'export', 'env', 'clear', 'tmux', 'man', 'help', 'which', 'chmod', 'xargs', 'pwd'];
       candidates = cmds.filter((c) => c.startsWith(partial));
     } else {
       // path completion

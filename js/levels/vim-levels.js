@@ -214,6 +214,35 @@ export const VIM_LEVELS = [
     cursor: [0, 0],
   },
   {
+    id: 'vim/17',
+    title: 'Inner Peace',
+    teach: ['ci"', "ci'", 'di(', 'ciw'],
+    keys: [...MOVE, 'w', 'b', 'e', '0', '$', 'f', 't', ';', 'c', 'd', 'y', 'i', 'a', 'x'],
+    type: 'transform',
+    brief:
+      'Text objects are why vim people look smug. ci" changes everything INSIDE the quotes, di( deletes everything ' +
+      'inside the parens, ciw the word you are merely near — from anywhere within them. No walking to the edges first.',
+    hints: [
+      'Cursor anywhere inside "hello wrold" → ci" → type the replacement.',
+      'ci\' works the same for single quotes; di( empties the parens.',
+      'i = inner, a = around (a grabs the delimiters too). They pair with d, c and y.',
+    ],
+    par: 48,
+    lines: [
+      'send("hello wrold", retries);',
+      "mode = 'slow';",
+      'cleanup(old_tmp_files);',
+      'assert(result != nil);',
+    ],
+    target: [
+      'send("hi there", retries);',
+      "mode = 'turbo';",
+      'cleanup();',
+      'assert(result != null);',
+    ],
+    cursor: [0, 0],
+  },
+  {
     id: 'vim/9',
     title: 'Copy That',
     teach: ['yy', 'p', 'P', 'yw'],
@@ -262,6 +291,41 @@ export const VIM_LEVELS = [
       'keep: header',
       'keep: footer',
       'keep: sig',
+    ],
+    cursor: [0, 0],
+  },
+  {
+    id: 'vim/16',
+    title: 'The Dot',
+    teach: ['.', '>>', '<<'],
+    keys: [...MOVE, '0', '$', 'w', 'b', 'e', 'A', '.', '>', '<', 'u'],
+    type: 'transform',
+    brief:
+      'The most famous key in vim: . repeats your last change. Make one perfect edit (like A;⎋ or >>), then ' +
+      'walk down the file pressing . — j. j. j. is the heartbeat of a vim master. >> indents a line, << unindents.',
+    hints: [
+      'A;⎋ appends a semicolon. Now every further semicolon is just j then .',
+      'Skip the if-line — it doesn’t want a semicolon.',
+      '>> indents launch(); then j . indents the next line the same way.',
+    ],
+    par: 26,
+    lines: [
+      'let a = 1',
+      'let b = 2',
+      'let c = 3',
+      'if (ready) {',
+      'launch()',
+      'fire()',
+      '}',
+    ],
+    target: [
+      'let a = 1;',
+      'let b = 2;',
+      'let c = 3;',
+      'if (ready) {',
+      '  launch();',
+      '  fire();',
+      '}',
     ],
     cursor: [0, 0],
   },
@@ -318,6 +382,38 @@ export const VIM_LEVELS = [
     cursor: [0, 0],
   },
   {
+    id: 'vim/18',
+    title: 'Teleporter',
+    teach: ['%', '*', 'ma', '`a'],
+    keys: [...MOVE, 'w', 'b', 'e', 'f', 't', ';', '0', '$', '%', '*', '#', 'm', '`', "'", 'g', 'G'],
+    type: 'collect',
+    brief:
+      'Three teleporters. % jumps between a bracket and its match. * jumps to the next occurrence of the word ' +
+      'under the cursor (# goes backwards). ma drops mark "a" where you stand; `a snaps you back to it from anywhere. ' +
+      'Collect the gems — and you must drop a mark and jump back to it before the portal opens.',
+    hints: [
+      'Start: % jumps from ( to its far-away ) — gem.',
+      'Get onto any "core" (0 then fc), then * hops core → core → core.',
+      'Stand on the { and % to its }. Then ma … wander … `a. That is the mark drill.',
+    ],
+    par: 18,
+    lines: [
+      'load(core, [deep, [nested, x]])',
+      '',
+      'if (core) {',
+      '   spin(core)',
+      '}',
+    ],
+    gems: [[0, 30], [0, 5], [2, 4], [3, 8], [4, 0]],
+    cursor: [0, 0],
+    require: [
+      {
+        text: 'Drop a mark (ma) and jump back to it (`a)',
+        check: (vm, runner) => runner.flags.has('mark-set') && runner.flags.has('mark-jump'),
+      },
+    ],
+  },
+  {
     id: 'vim/13',
     title: 'Substitute Teacher',
     teach: [':s/old/new/', ':%s/old/new/g'],
@@ -369,10 +465,40 @@ export const VIM_LEVELS = [
     cursor: [0, 0],
   },
   {
+    id: 'vim/19',
+    title: 'Macro Machine',
+    teach: ['qa', '@a', '@@'],
+    keys: [...MOVE, '0', '$', 'w', 'b', 'e', 'd', 'c', 'i', 'a', 'A', 'q', '@', 'u', 'x', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    type: 'transform',
+    brief:
+      'When even the dot command isn’t enough: macros. qa starts recording into register a, q stops, @a replays, ' +
+      '3@a replays three times, @@ repeats the last one. Record the fix for ONE line (end the recording with j so it ' +
+      'moves down), then let the machine do the rest.',
+    hints: [
+      'Record: qa 0 dw i- [ ] ⎋ j q — that fixes a line AND steps to the next.',
+      'Now 3@a converts the remaining three lines in one blow.',
+      'Botched the recording? u to undo, then qa to re-record (it overwrites).',
+    ],
+    par: 24,
+    lines: [
+      'item alpha',
+      'item beta',
+      'item gamma',
+      'item delta',
+    ],
+    target: [
+      '- [ ] alpha',
+      '- [ ] beta',
+      '- [ ] gamma',
+      '- [ ] delta',
+    ],
+    cursor: [0, 0],
+  },
+  {
     id: 'vim/15',
     title: 'Boss: The Refactor',
     teach: ['everything'],
-    keys: [...MOVE, 'w', 'b', 'e', '0', '^', '$', 'f', 'F', 't', 'T', ';', ',', 'g', 'G', 'i', 'a', 'I', 'A', 'o', 'O', 'x', 'X', 'd', 'D', 'c', 'C', 's', 'r', '~', 'y', 'p', 'P', 'J', 'u', 'v', 'V', '/', 'n', 'N', ':', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    keys: [...MOVE, 'w', 'b', 'e', '0', '^', '$', 'f', 'F', 't', 'T', ';', ',', 'g', 'G', 'i', 'a', 'I', 'A', 'o', 'O', 'x', 'X', 'd', 'D', 'c', 'C', 's', 'r', '~', 'y', 'p', 'P', 'J', 'u', 'v', 'V', '/', 'n', 'N', ':', '.', '%', '*', '#', 'm', '`', "'", 'q', '@', '>', '<', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
     type: 'transform',
     brief:
       'Everything you know, one filthy diff. Rename the function, kill the dead code, fix the typos, duplicate the retry line. ' +

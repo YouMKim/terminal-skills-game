@@ -90,6 +90,11 @@ const HELP = {
   chmod: 'chmod +x <file> — make a file executable',
   ps: 'ps — list running processes',
   kill: 'kill [-9] <pid> — terminate a process',
+  pgrep: 'pgrep [-f] <pattern> — print PIDs of matching processes',
+  pkill: 'pkill [-f] <pattern> — kill all matching processes',
+  cut: 'cut -d <delim> -f <N[,M]> [file] — extract columns',
+  awk: "awk '{print $N}' [file] — extract whitespace-separated fields",
+  sed: "sed 's/pattern/replacement/g' [file] — stream-edit text (prints result)",
   jobs: 'jobs — list this shell’s background jobs',
   fg: 'fg [%n] — bring a job to the foreground',
   bg: 'bg [%n] — resume a stopped job in the background',
@@ -137,10 +142,10 @@ export class Shell {
     if (!line) return { out: [] };
 
     const echoed = [];
-    if (line.includes('!!')) {
+    if (line.includes('!!') || line.includes('!$')) {
       const last = this.history[this.history.length - 1];
       if (!last) return { out: ['zsh: no previous command'] };
-      line = line.replace(/!!/g, last);
+      line = line.replace(/!!/g, last).replace(/!\$/g, last.trim().split(/\s+/).pop());
       echoed.push(line);
     }
     this.history.push(line);
@@ -163,6 +168,7 @@ export class Shell {
     let seg = segment.trim();
     let bg = false;
     if (seg.endsWith('&')) { bg = true; seg = seg.slice(0, -1).trim(); }
+    if (seg.includes('$(')) seg = this.expandSubst(seg);
     const stages = splitTop(seg, '|');
     if (stages.length > 1) {
       this.k.emit({ type: 'pipeline', cmds: stages.map((s) => s.trim().split(/\s+/)[0]) });
@@ -253,6 +259,36 @@ export class Shell {
     }
 
     return { out: `zsh: command not found: ${name}`, code: 127 };
+  }
+
+  // Command substitution: replace $(cmd) with the command's output.
+  expandSubst(seg) {
+    this._substDepth = (this._substDepth || 0) + 1;
+    if (this._substDepth > 3) { this._substDepth--; return seg; }
+    let out = '';
+    let i = 0;
+    while (i < seg.length) {
+      if (seg[i] === '$' && seg[i + 1] === '(') {
+        let depth = 1;
+        let j = i + 2;
+        while (j < seg.length && depth) {
+          if (seg[j] === '(') depth++;
+          else if (seg[j] === ')') depth--;
+          j++;
+        }
+        const inner = seg.slice(i + 2, j - 1);
+        const res = this.runPipeline(inner);
+        if (res.fgProc) res.fgProc.status = 'done'; // no interactive programs inside $()
+        this.k.emit({ type: 'subst', inner });
+        out += (res.out || []).join(' ').trim();
+        i = j;
+      } else {
+        out += seg[i];
+        i++;
+      }
+    }
+    this._substDepth--;
+    return out;
   }
 
   resolvePath(p) {
@@ -677,6 +713,106 @@ const BUILTINS = {
       if (!sh.k.kill(pid)) { out.push(`kill: ${pid}: no such process`); code = 1; }
     }
     return { out: out.join('\n'), code };
+  },
+
+  pgrep(sh, args) {
+    const { flags, rest } = parseFlags(args, 'f');
+    const pat = rest[0];
+    if (!pat) return { out: 'usage: pgrep [-f] pattern', code: 2 };
+    const procs = sh.k.procs.filter(
+      (p) => (p.status === 'running' || p.status === 'stopped') && (p.name.includes(pat) || (flags.f && p.cmd.includes(pat)))
+    );
+    sh.k.emit({ type: 'pgrep', pattern: pat, count: procs.length });
+    return { out: procs.map((p) => String(p.pid)).join('\n'), code: procs.length ? 0 : 1 };
+  },
+
+  pkill(sh, args) {
+    const { flags, rest } = parseFlags(args, 'f9');
+    const pat = rest[0];
+    if (!pat) return { out: 'usage: pkill [-f] pattern', code: 2 };
+    const procs = sh.k.procs.filter(
+      (p) => (p.status === 'running' || p.status === 'stopped') && (p.name.includes(pat) || (flags.f && p.cmd.includes(pat)))
+    );
+    for (const p of procs) sh.k.kill(p.pid);
+    sh.k.emit({ type: 'pkill', pattern: pat, count: procs.length });
+    return { out: '', code: procs.length ? 0 : 1 };
+  },
+
+  cut(sh, args, stdin) {
+    let delim = '\t';
+    let fields = null;
+    const files = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '-d') delim = args[++i] ?? '\t';
+      else if (a.startsWith('-d') && a.length > 2) delim = a.slice(2);
+      else if (a === '-f') fields = args[++i];
+      else if (a.startsWith('-f') && a.length > 2) fields = a.slice(2);
+      else files.push(a);
+    }
+    if (!fields) return { out: 'usage: cut -d <delim> -f <N[,M]> [file]', code: 2 };
+    const idxs = fields.split(',').map((n) => parseInt(n, 10)).filter((n) => n > 0);
+    let text = stdin ?? '';
+    if (files.length) {
+      const { abs, node } = readTarget(sh, files[0]);
+      if (!node || node.type !== 'file') return { out: `cut: no such file: ${files[0]}`, code: 1 };
+      text = node.content;
+      sh.k.emit({ type: 'read', path: abs });
+    }
+    const lines = text.replace(/\n$/, '').split('\n');
+    sh.k.emit({ type: 'cut', fields });
+    return { out: lines.map((l) => idxs.map((n) => l.split(delim)[n - 1] ?? '').join(delim)).join('\n'), code: 0 };
+  },
+
+  awk(sh, args, stdin) {
+    const prog = args[0] || '';
+    const m = prog.match(/^\{\s*print\s+(.*?)\s*\}$/);
+    if (!m) return { out: "awk: this sim only supports '{print $N}' (and $N, $M lists)", code: 2 };
+    const parts = m[1].split(/\s*,\s*/);
+    let text = stdin ?? '';
+    if (args[1]) {
+      const { abs, node } = readTarget(sh, args[1]);
+      if (!node || node.type !== 'file') return { out: `awk: no such file: ${args[1]}`, code: 1 };
+      text = node.content;
+      sh.k.emit({ type: 'read', path: abs });
+    }
+    const lines = text.replace(/\n$/, '').split('\n');
+    sh.k.emit({ type: 'awk', program: prog });
+    const out = lines.map((l) => {
+      const f = l.trim().split(/\s+/);
+      return parts
+        .map((p) => {
+          const fm = p.match(/^\$(\d+)$/);
+          if (!fm) return p.replace(/^"(.*)"$/, '$1');
+          const n = parseInt(fm[1], 10);
+          return n === 0 ? l : f[n - 1] ?? '';
+        })
+        .join(' ');
+    });
+    return { out: out.join('\n'), code: 0 };
+  },
+
+  sed(sh, args, stdin) {
+    if (args.includes('-i')) return { out: 'sed: -i is not supported here — redirect to a new file with > instead', code: 2 };
+    const expr = args[0] || '';
+    const m = expr.match(/^s\/((?:[^/\\]|\\.)*)\/((?:[^/\\]|\\.)*)\/([gi]*)$/);
+    if (!m) return { out: "sed: this sim only supports 's/pattern/replacement/[g]'", code: 2 };
+    let re;
+    try {
+      re = new RegExp(m[1], m[3]);
+    } catch {
+      return { out: `sed: bad pattern: ${m[1]}`, code: 2 };
+    }
+    let text = stdin ?? '';
+    if (args[1]) {
+      const { abs, node } = readTarget(sh, args[1]);
+      if (!node || node.type !== 'file') return { out: `sed: no such file: ${args[1]}`, code: 1 };
+      text = node.content;
+      sh.k.emit({ type: 'read', path: abs });
+    }
+    sh.k.emit({ type: 'sed', expr });
+    const lines = text.replace(/\n$/, '').split('\n');
+    return { out: lines.map((l) => l.replace(re, m[2])).join('\n'), code: 0 };
   },
 
   jobs(sh) {

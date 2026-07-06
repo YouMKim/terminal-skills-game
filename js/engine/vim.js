@@ -2,8 +2,8 @@
 // Pure logic (no DOM) so it can be tested in node.
 //
 // Supported: h j k l w b e 0 ^ $ f F t T ; , gg G {count} i a I A o O
-//            x X r ~ d c y (+ motions, dd cc yy, text objects iw aw i" a" i( a()
-//            D C s S p P J u Ctrl-r v V / n N :N :s :%s :w :q
+//            x X r ~ d c y > < (+ motions, dd cc yy >>, text objects iw aw i" a" i( a()
+//            D C s S p P J u Ctrl-r v V / n N * # % m ` ' . q @ :N :s :%s :w :q
 
 const WORD = /[A-Za-z0-9_]/;
 
@@ -31,7 +31,15 @@ export class Vim {
     this.anchor = null; // [r,c] visual anchor
     this.desired = 0;
     this.message = '';
-    this.lastEvent = null; // 'edit' | 'write' — for level checks
+    this.lastEvent = null; // 'edit' | 'write' | 'mark-set' | 'mark-jump' — for level checks
+    this.marks = {};
+    this.macros = {};
+    this.macroRec = null; // {reg, keys:[{k,ctrl}]}
+    this.lastMacroReg = null;
+    this.lastChange = null; // key sequence for the dot command
+    this._dotCand = [];
+    this._dotDirty = false;
+    this._replaying = false;
   }
 
   line(r = this.r) { return this.lines[r] ?? ''; }
@@ -282,6 +290,10 @@ export class Vim {
         return { r: pos[0], c: pos[1], incl: true };
       }
       case 'G': return { r: this._hadCount ? Math.min(n - 1, this.lines.length - 1) : this.lines.length - 1, c: 0, linewise: true, firstNB: true };
+      case '%': {
+        const pos = this.matchBracket();
+        return pos ? { r: pos[0], c: pos[1], incl: true } : null;
+      }
       case 'g': return null; // handled via pending
       default: return null;
     }
@@ -360,6 +372,34 @@ export class Vim {
     return { linewise: false, r1: r, c1: a, r2: r, c2: b };
   }
 
+  // Find the bracket at/after the cursor on this line and return the position
+  // of its match (the % motion), or null.
+  matchBracket() {
+    const OPEN = '([{';
+    const CLOSE = ')]}';
+    const line = this.line();
+    let sc = -1;
+    for (let i = this.c; i < line.length; i++) {
+      if ((OPEN + CLOSE).includes(line[i])) { sc = i; break; }
+    }
+    if (sc === -1) return null;
+    const ch = line[sc];
+    const isOpen = OPEN.includes(ch);
+    const mate = isOpen ? CLOSE[OPEN.indexOf(ch)] : OPEN[CLOSE.indexOf(ch)];
+    let depth = 0;
+    let pos = [this.r, sc];
+    while (pos) {
+      const cur = this.charAt(pos[0], pos[1]);
+      if (cur === ch) depth++;
+      else if (cur === mate) {
+        depth--;
+        if (depth === 0) return pos;
+      }
+      pos = isOpen ? this.fwd(pos[0], pos[1]) : this.bwd(pos[0], pos[1]);
+    }
+    return null;
+  }
+
   // --- key handling ----------------------------------------------------------
   // key: e.key string. mods: {ctrl}. Returns true if the key was consumed.
 
@@ -367,12 +407,47 @@ export class Vim {
     this.lastEvent = null;
     if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock') return false;
 
+    // macro recording captures every key (the terminating q is popped later)
+    if (this.macroRec && !this._replaying) this.macroRec.keys.push({ k, ctrl: !!mods.ctrl });
+
+    // dot-repeat tracking: record the key sequence of the last buffer change.
+    // u / Ctrl-r / . / q / @ are "neutral" — they never become the last change.
+    const neutral = k === '.' || k === 'u' || k === 'q' || k === '@' || !!mods.ctrl;
+    if (!this._replaying && !neutral) {
+      if (this.mode === 'normal' && !this.op && !this.pending && !this.count && !this.opCount && !this._dotDirty) {
+        this._dotCand = [];
+      }
+      this._dotCand.push({ k, ctrl: !!mods.ctrl });
+    }
+
+    const handled = this.dispatch(k, mods);
+
+    if (!this._replaying && !neutral) {
+      if (this.lastEvent === 'edit') this._dotDirty = true;
+      if (this._dotDirty && this.mode === 'normal' && !this.op && !this.pending) {
+        const first = this._dotCand[0];
+        if (first && first.k !== ':' && first.k !== '/') this.lastChange = this._dotCand.slice();
+        this._dotDirty = false;
+      }
+    }
+    return handled;
+  }
+
+  dispatch(k, mods) {
     switch (this.mode) {
       case 'insert': return this.keyInsert(k, mods);
       case 'cmd': return this.keyMini(k, ':');
       case 'search': return this.keyMini(k, '/');
       default: return this.keyNormal(k, mods);
     }
+  }
+
+  replay(keys, times = 1) {
+    this._replaying = true;
+    for (let i = 0; i < times; i++) {
+      for (const s of keys) this.key(s.k, { ctrl: s.ctrl });
+    }
+    this._replaying = false;
   }
 
   keyInsert(k, mods) {
@@ -544,6 +619,35 @@ export class Vim {
         }
         return true;
       }
+      if (p.kind === 'mark') {
+        this.marks[k] = { r: this.r, c: this.c };
+        this.message = `mark ${k} set`;
+        this.lastEvent = 'mark-set';
+        return true;
+      }
+      if (p.kind === 'markjump') {
+        const m = this.marks[k];
+        if (!m) { this.message = `E20: Mark not set: ${k}`; return true; }
+        this.r = Math.min(m.r, this.lines.length - 1);
+        this.c = p.exact ? m.c : this.firstNonBlank(this.r);
+        this.clamp();
+        this.lastEvent = 'mark-jump';
+        return true;
+      }
+      if (p.kind === 'macro-reg') {
+        this.macroRec = { reg: k, keys: [] };
+        this.lastMacroReg = k;
+        this.message = `recording @${k}`;
+        return true;
+      }
+      if (p.kind === 'macro-play') {
+        const reg = k === '@' ? this.lastMacroReg : k;
+        const keys = reg ? this.macros[reg] : null;
+        if (!keys) { this.message = `E748: no macro recorded in @${k}`; return true; }
+        this.lastMacroReg = reg;
+        this.replay(keys, this.takeCount());
+        return true;
+      }
       return true;
     }
 
@@ -566,7 +670,7 @@ export class Vim {
     if (mods.ctrl) return false;
 
     // operators
-    if (!visual && (k === 'd' || k === 'c' || k === 'y')) {
+    if (!visual && (k === 'd' || k === 'c' || k === 'y' || k === '>' || k === '<')) {
       if (this.op === k) {
         // dd / cc / yy
         const n = this.takeCount();
@@ -617,6 +721,46 @@ export class Vim {
         return true;
       }
       case 'u': this.undo(); return true;
+      case '.': {
+        if (!this.lastChange) { this.message = 'Nothing to repeat'; this.takeCount(); return true; }
+        this.replay(this.lastChange, this.takeCount());
+        return true;
+      }
+      case 'm':
+        this.pending = { kind: 'mark' };
+        return true;
+      case '`':
+        this.pending = { kind: 'markjump', exact: true };
+        return true;
+      case "'":
+        this.pending = { kind: 'markjump', exact: false };
+        return true;
+      case 'q':
+        if (this.macroRec) {
+          this.macroRec.keys.pop(); // drop the terminating q itself
+          this.macros[this.macroRec.reg] = this.macroRec.keys;
+          this.message = `recorded @${this.macroRec.reg} (${this.macroRec.keys.length} keys)`;
+          this.macroRec = null;
+        } else {
+          this.pending = { kind: 'macro-reg' };
+        }
+        return true;
+      case '@':
+        this.pending = { kind: 'macro-play' };
+        return true;
+      case '*': case '#': {
+        const line = this.line();
+        if (!WORD.test(line[this.c] || '')) { this.message = 'E348: No string under cursor'; return true; }
+        let a = this.c;
+        let b = this.c;
+        while (a > 0 && WORD.test(line[a - 1])) a--;
+        while (b < line.length - 1 && WORD.test(line[b + 1])) b++;
+        this.searchPat = line.slice(a, b + 1);
+        const hit = this.searchFrom(this.r, k === '*' ? b : a, this.searchPat, k === '#');
+        if (hit) [this.r, this.c] = hit;
+        this.message = (k === '*' ? '/' : '?') + this.searchPat;
+        return true;
+      }
       case 'v':
         if (this.mode === 'visual') { this.mode = 'normal'; this.anchor = null; }
         else { this.mode = 'visual'; this.anchor = [this.r, this.c]; }
@@ -713,7 +857,7 @@ export class Vim {
       }
     }
 
-    if (visual && (k === 'd' || k === 'y' || k === 'c')) return this.visualOperate(k);
+    if (visual && (k === 'd' || k === 'y' || k === 'c' || k === '>' || k === '<')) return this.visualOperate(k);
 
     // plain motion (possibly as operator target)
     this._hadCount = !!(this.count || this.opCount);
@@ -791,6 +935,16 @@ export class Vim {
   applyOperator(op, range) {
     if (op === 'y') { this.yankRange(range); return; }
     this.snap();
+    if (op === '>' || op === '<') {
+      for (let i = range.r1; i <= range.r2; i++) {
+        if (op === '>') { if (this.lines[i].length) this.lines[i] = '  ' + this.lines[i]; }
+        else this.lines[i] = this.lines[i].replace(/^ {1,2}/, '');
+      }
+      this.r = range.r1;
+      this.c = this.firstNonBlank(range.r1);
+      this.lastEvent = 'edit';
+      return;
+    }
     if (op === 'd') { this.deleteRange(range); return; }
     // change
     if (range.linewise) {
@@ -911,7 +1065,8 @@ export class Vim {
   statusline() {
     if (this.mode === 'cmd') return ':' + this.miniBuf;
     if (this.mode === 'search') return '/' + this.miniBuf;
-    const mode = { insert: '-- INSERT --', visual: '-- VISUAL --', vline: '-- VISUAL LINE --' }[this.mode] || '';
+    let mode = { insert: '-- INSERT --', visual: '-- VISUAL --', vline: '-- VISUAL LINE --' }[this.mode] || '';
+    if (this.macroRec) mode = `${mode ? mode + ' ' : ''}recording @${this.macroRec.reg}`;
     const pend = (this.count || '') + (this.op || '') + (this.opCount || '') + (this.pending ? this.pending.cmd || this.pending.kind[0] : '');
     return { mode, pending: pend, message: this.message, pos: `${this.r + 1},${this.c + 1}` };
   }

@@ -28,6 +28,7 @@ export class VimRunner {
     });
     this.allowed = new Set(level.keys || []);
     this.gems = (level.gems || []).map(([r, c]) => ({ r, c, got: false }));
+    this.flags = new Set(); // engine events seen (mark-set, mark-jump, ...)
     this.collectAt();
     this.render();
   }
@@ -61,6 +62,7 @@ export class VimRunner {
     const handled = vm.key(k, { ctrl: e.ctrlKey });
     if (!handled) return false;
     this.keystrokes++;
+    if (vm.lastEvent) this.flags.add(vm.lastEvent);
     this.collectAt();
     this.render();
     this.checkWin();
@@ -68,10 +70,14 @@ export class VimRunner {
     return true;
   }
 
-  done() {
+  baseDone() {
     if (this.level.type === 'collect') return this.gems.every((g) => g.got);
     const t = this.level.target;
     return this.vim.lines.length === t.length && this.vim.lines.every((l, i) => l === t[i]);
+  }
+
+  done() {
+    return this.baseDone() && (this.level.require || []).every((r) => r.check(this.vim, this));
   }
 
   checkWin() {
@@ -82,11 +88,15 @@ export class VimRunner {
   }
 
   getObjectives() {
+    let base;
     if (this.level.type === 'collect') {
       const got = this.gems.filter((g) => g.got).length;
-      return [{ text: `Collect the gems — ${got}/${this.gems.length}`, done: got === this.gems.length }];
+      base = [{ text: `Collect the gems — ${got}/${this.gems.length}`, done: got === this.gems.length }];
+    } else {
+      base = [{ text: 'Make the buffer match the target', done: this.baseDone() }];
     }
-    return [{ text: 'Make the buffer match the target', done: this.done() }];
+    const extra = (this.level.require || []).map((r) => ({ text: r.text, done: !!r.check(this.vim, this) }));
+    return [...base, ...extra];
   }
 
   render() {

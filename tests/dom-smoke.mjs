@@ -89,6 +89,56 @@ function ticks(runner, n) {
   ok(r.vim.c === before[1] - 1, 'vim allowed key moves');
 }
 
+// --- Vim: solve The Dot (vim/16) with j. j. -------------------------------------
+
+{
+  const lvl = VIM_LEVELS.find((l) => l.id === 'vim/16');
+  let won = false;
+  const el = new El('div');
+  const r = new VimRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  for (const k of ['A', ';', 'Escape', 'j', '.', 'j', '.', 'j', 'j', '.', 'j', '.', 'k', '>', '>', 'j', '.']) key(r, k);
+  ok(won, `vim/16 dot level solvable (buffer: ${JSON.stringify(r.vim.lines)})`);
+}
+
+// --- Vim: solve Teleporter (vim/18): % * marks ------------------------------------
+
+{
+  const lvl = VIM_LEVELS.find((l) => l.id === 'vim/18');
+  let won = false;
+  const el = new El('div');
+  const r = new VimRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  for (const k of ['%', '0', 'f', 'c', '*', '*', 'm', 'a', 'k', 'f', '{', '%', '`', 'a']) key(r, k);
+  ok(won, `vim/18 teleporter solvable (gems: ${r.gems.filter((g) => g.got).length}/${r.gems.length})`);
+}
+
+// --- Vim: solve Macro Machine (vim/19) ---------------------------------------------
+
+{
+  const lvl = VIM_LEVELS.find((l) => l.id === 'vim/19');
+  let won = false;
+  const el = new El('div');
+  const r = new VimRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  for (const k of ['q', 'a', '0', 'd', 'w', 'i', '-', ' ', '[', ' ', ']', ' ', 'Escape', 'j', 'q', '3', '@', 'a']) key(r, k);
+  ok(won, `vim/19 macro level solvable (buffer: ${JSON.stringify(r.vim.lines)})`);
+}
+
+// --- Vim: solve Inner Peace (vim/17): text objects ----------------------------------
+
+{
+  const lvl = VIM_LEVELS.find((l) => l.id === 'vim/17');
+  let won = false;
+  const el = new El('div');
+  const r = new VimRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  const script = [
+    'f', '"', 'c', 'i', '"', ...'hi there', 'Escape',        // "hello wrold" → "hi there"
+    'j', '0', 'f', "'", 'c', 'i', "'", ...'turbo', 'Escape', // 'slow' → 'turbo'
+    'j', '0', 'f', '(', 'd', 'i', '(',                       // cleanup(...) → cleanup()
+    'j', '0', 'f', 'n', 'c', 'i', 'w', ...'null', 'Escape',  // nil → null
+  ];
+  for (const k of script) key(r, k);
+  ok(won, `vim/17 text objects solvable (buffer: ${JSON.stringify(r.vim.lines)})`);
+}
+
 // --- Shell: solve level 1 (Wayfinder) ------------------------------------------
 
 {
@@ -153,6 +203,50 @@ function ticks(runner, n) {
   ok(won, 'shell/9 solvable (readline drills)');
 }
 
+// --- Shell: solve Chain Reaction (shell/11: xargs + chmod) --------------------------
+
+{
+  const lvl = SHELL_LEVELS.find((l) => l.id === 'shell/11');
+  let won = false;
+  const el = new El('div');
+  const r = new ShellRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, 'find . -name "*.tmp" | wc -l');
+  type(r, 'find . -name "*.tmp" | xargs rm');
+  type(r, 'chmod +x agents/cleanup.sh');
+  type(r, './agents/cleanup.sh');
+  ticks(r, 5);
+  ok(won, 'shell/11 solvable (xargs + chmod)');
+}
+
+// --- Shell: solve Substitution Cipher (shell/12) -------------------------------------
+
+{
+  const lvl = SHELL_LEVELS.find((l) => l.id === 'shell/12');
+  let won = false;
+  const el = new El('div');
+  const r = new ShellRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, 'echo "operator: $(whoami)"');
+  type(r, 'pgrep imposter');
+  type(r, 'kill $(pgrep imposter)');
+  type(r, 'ps');
+  ok(won, 'shell/12 solvable (kill $(pgrep ...))');
+}
+
+// --- Shell: solve Field Surgeon (shell/13) --------------------------------------------
+
+{
+  const lvl = SHELL_LEVELS.find((l) => l.id === 'shell/13');
+  let won = false;
+  const el = new El('div');
+  const r = new ShellRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, "awk '{print $1}' logs/access.log");
+  type(r, 'cut -d" " -f2 logs/access.log');
+  type(r, "awk '{print $1}' logs/access.log | sort | uniq -c | sort -rn");
+  type(r, "awk '{print $1}' logs/access.log | sed 's/agent-//' | sort | uniq -c | sort -rn");
+  type(r, 'echo beta > offender.txt');
+  ok(won, 'shell/13 solvable (awk/cut/sed)');
+}
+
 // --- Tmux: solve level 1 (enter, run, detach, ls, attach) ---------------------------
 
 {
@@ -211,6 +305,64 @@ function ticks(runner, n) {
   rename('scratch');
   key(r, 'b', { ctrl: true }); key(r, '0');
   ok(won, `tmux/5 solvable (windows: ${r.tmux.attached ? r.tmux.attached.windows.map((w) => w.name).join(',') : 'detached'})`);
+}
+
+// --- Tmux: solve Time Scroller (tmux/9: copy mode) ------------------------------------
+
+{
+  const lvl = TMUX_LEVELS.find((l) => l.id === 'tmux/9');
+  let won = false;
+  const el = new El('div');
+  const r = new TmuxRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, 'tmux');
+  type(r, 'cat /var/log/boot.log');
+  key(r, 'b', { ctrl: true }); key(r, '[');
+  key(r, 'g'); // jump to top of scrollback
+  key(r, 'q'); // exit copy mode
+  type(r, 'echo ORION-9 > code.txt');
+  ok(won, 'tmux/9 solvable (copy-mode scrollback)');
+}
+
+// --- Tmux: solve The Command Line Within (tmux/10) --------------------------------------
+
+{
+  const lvl = TMUX_LEVELS.find((l) => l.id === 'tmux/10');
+  let won = false;
+  const el = new El('div');
+  const r = new TmuxRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, 'tmux');
+  const prompt = (cmd) => {
+    key(r, 'b', { ctrl: true }); key(r, ':');
+    for (const ch of cmd) key(r, ch);
+    key(r, 'Enter');
+  };
+  prompt('split-window -h');
+  prompt('rename-window ops');
+  prompt('resize-pane -L 10');
+  ok(won, 'tmux/10 solvable (command prompt)');
+}
+
+// --- Tmux: solve Hive Mind (tmux/11: synchronize-panes) ----------------------------------
+
+{
+  const lvl = TMUX_LEVELS.find((l) => l.id === 'tmux/11');
+  let won = false;
+  const el = new El('div');
+  const r = new TmuxRunner(el, lvl, { onChange: () => {}, onWin: () => { won = true; } });
+  type(r, 'tmux');
+  key(r, 'b', { ctrl: true }); key(r, '%');
+  key(r, 'b', { ctrl: true }); key(r, '"');
+  const prompt = (cmd) => {
+    key(r, 'b', { ctrl: true }); key(r, ':');
+    for (const ch of cmd) key(r, ch);
+    key(r, 'Enter');
+  };
+  prompt('setw synchronize-panes on');
+  type(r, 'echo sync-check');
+  const histories = r.tmux.panes().map((p) => p.shell.history.length);
+  ok(histories.every((h) => h >= 1), `tmux/11 broadcast reached all panes (${histories.join(',')})`);
+  prompt('setw synchronize-panes off');
+  ok(won, 'tmux/11 solvable (synchronize-panes)');
 }
 
 // --- Tmux: level 8 boss --------------------------------------------------------------
